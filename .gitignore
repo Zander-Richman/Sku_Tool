@@ -1,0 +1,8 @@
+.vscode/
+__pycache__/
+*.pyc
+product_input/
+product_output/
+inventory_images_record.xlsx
+*.heic
+*.HEIC
