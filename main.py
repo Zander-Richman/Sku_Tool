@@ -15,7 +15,7 @@ if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the current script
-EXCEL_PATH = os.path.join(os.environ['USERPROFILE'], 'OneDrive', 'Documents', 'BORG', 'BORG_Shared', 'inventory_images_record.xlsx')  # Path to save the Excel log file
+EXCEL_PATH = os.path.join(BASE_DIR, 'BORG_Shared', 'inventory_images_record.xlsx')  # Path to save the Excel log file
 SOURCE_FOLDER = os.path.join(BASE_DIR, "product_input")  # Default source folder
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "product_output")  # Default output folder
 
