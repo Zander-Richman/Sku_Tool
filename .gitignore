@@ -11,3 +11,4 @@ dist/
 *.spec
 *.desktop.ini
 *.exe
+BORG_Shared/
