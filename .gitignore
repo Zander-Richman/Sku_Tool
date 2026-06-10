@@ -6,3 +6,8 @@ product_output/
 inventory_images_record.xlsx
 *.heic
 *.HEIC
+build/
+dist/
+*.spec
+*.desktop.ini
+*.exe
