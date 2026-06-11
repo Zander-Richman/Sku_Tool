@@ -67,7 +67,9 @@ def first_time_setup():
     if not os.path.exists(EXCEL_PATH):
         print("ERROR: the file 'inventory_images_record.xlsx' does not exist in the BORG folder." \
         "You are not allowed to run this tool until you add this file.")
-        input("Please seek assistance from your supervisor to obtain the 'inventory_images_record.xlsx' file and place it in the BORG folder, or await further instructions. Press enter to exit the application once you have read this message. ")
+        input("Please seek assistance from your supervisor to obtain the 'inventory_images_record.xlsx' file and place it in the BORG folder, or await further instructions." \
+
+            "Press enter to exit the application once you have read this message. ")
         raise SystemExit(0)
     
     if not os.getenv("FTP_HOST"):
@@ -77,11 +79,23 @@ def first_time_setup():
     print("product_output folder is ready")
     print("Excel log file is ready")
     print("FTP credentials have been entered")
-    setup_confirmation = input("Please place the photos if you have not done so already and restart the program, type 'exit' to quit and restart the program once the photos are placed. Otherwise, please press Enter to continue. ")
+    setup_confirmation = input("If you have not done so yet, please insert pictures into the input folder. " \
+        "If pictures from the previous session are still in the folder, please type 'clear' to clear the input folder. " \
+        "If your folder is cleared but there are no new photos, type 'exit' to exit the program and insert your pictures into the folder. " \
+
+        "Otherwise, press Enter to continue. ")
     if setup_confirmation == "":
         return
-    elif setup_confirmation.lower() == "exit":
+    elif setup_confirmation.lower().strip() == "exit":
         raise SystemExit(0)
+    elif setup_confirmation.lower().strip() == "clear":
+        confirm_clear = input(f"Are you sure you want to clear the source folder ({SOURCE_FOLDER})? This will delete all original photos. Type 'yes' to confirm: ")
+        if confirm_clear.lower().strip() == 'yes':
+            clear_input_folder()
+            input("Input folder cleared! Please add new photos and restart BORG.")
+            raise SystemExit(0)
+
+            
 
 
 def get_jpgs(folder):
@@ -253,7 +267,7 @@ def update_excel_log(groups, imported=False):
 #step 1: set up folders and check for Excel log file then start the process
 register_heif_opener()
 first_time_setup()
-start = input("Press Enter to start processing photos, type 'clear' to clear the 'product_input' folder, or type 'update' to update the Excel log: ")
+start = input("Press Enter to start processing photos, or type 'update' to update the Excel log: ")
 
 
 # Step 2 — Convert all photos to JPG
@@ -291,10 +305,7 @@ if start == "":
     if confirm_clear.lower() == 'yes':
         clear_input_folder()
 
-elif start.lower() == "clear":
-    confirm_clear = input(f"Are you sure you want to clear the source folder ({SOURCE_FOLDER})? This will delete all original photos. Type 'yes' to confirm: ")
-    if confirm_clear.lower() == 'yes':
-        clear_input_folder()
+
 
 elif start.lower() == "update":
     groups = {folder: [] for folder in os.listdir(OUTPUT_FOLDER) 
