@@ -1,11 +1,17 @@
 import os
+import tempfile
+import cloudmersive_barcode_api_client
+from cloudmersive_barcode_api_client.rest import ApiException
 import shutil
-from PIL import Image
 import pytesseract
+import time
+from PIL import Image
 from pillow_heif import register_heif_opener
 import paramiko
 from win32com.client import Dispatch
 import sys
+from google.cloud import vision
+import re
 
 
 
@@ -18,9 +24,32 @@ else:
 EXCEL_PATH = os.path.join(BASE_DIR, 'BORG_Shared', 'inventory_images_record.xlsx')  # Path to save the Excel log file
 SOURCE_FOLDER = os.path.join(BASE_DIR, "product_input")  # Default source folder
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "product_output")  # Default output folder
+SUPPLIER_PREFIXES = {"KAWASAKI": "KA",
+                     "YAMAHA": "YA",
+                     "SUZUKI": "SU",
+                     "KTM": "KT",
+                     "POLARIS": "PO",
+                     "BRP": "SD",
+                     "CF MOTO": "CF",
+                     "ARCTIC CAT": "AC",
+                     "HONDA": "HO"}
+BARCODE_SUPPLIERS = ["KAWASAKI", "YAMAHA", "SUZUZI", "HONDA", "POLARIS", "KTM", "BRP", "CF MOTO"]
+TEXT_SUPPLIERS = ["ARCTIC CAT"]
+
 
 # Path to the logo image.... may need this later if we decide to add it
 LOGO_PATH = os.path.join(BASE_DIR, "worldofpowersports_logo.png")  
+
+# Google vision client creation
+vision_client = vision.ImageAnnotatorClient(
+                client_options = {"api_key": os.getenv("GOOGLE_VISION_KEY")}
+            )
+# Cloudmersive barcode API client creation
+configuration = cloudmersive_barcode_api_client.Configuration()
+configuration.api_key['Apikey'] = os.getenv("CLOUDMERSIVE_KEY")
+api_instance = cloudmersive_barcode_api_client.BarcodeScanApi(
+    cloudmersive_barcode_api_client.ApiClient(configuration)
+)
 
 
 def create_shortcut():
@@ -132,45 +161,177 @@ def convert_to_jpg(image_path):
     return jpg_path
 
 
-def is_divider(image_path):
-    img = Image.open(image_path)
+def detect_barcode(image_path):
+    try: 
+        time.sleep(1)  # Add a delay to avoid hitting rate limits
+        with Image.open((image_path)) as img:
+            img = img.convert('RGB')
+            temp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+            temp_path = temp.name 
+            temp.close()
+            img.save(temp_path, 'JPEG')
+        response = api_instance.barcode_scan_image(temp_path)
+        os.remove(temp.name)
 
-    custom_config = r'--psm 6 -c min_characters_to_try=1'
+        if response.successful:
+            return response.raw_text
+        return None
+    except ApiException as e:
+        return None
 
-    img = img.resize((800, 800))
 
-    img = img.convert('L')  # Convert to grayscale
 
-    text = pytesseract.image_to_string(img, config=custom_config).strip().upper()
-    lines = text.splitlines()
-    lines = [line.strip() for line in lines if line.strip()]
+def detect_text(image_path, supplier, retries=2):
+    google_vision_failed = False
+    for attempt in range(retries): 
+        try:    
+            with open(image_path, 'rb') as f:
+                content = f.read()
+            image = vision.Image(content=content)
+            response = vision_client.text_detection(image=image)
 
-    if any('SKU' in line for line in lines):
-        sku_index = next(i for i, line in enumerate(lines) if 'SKU' in line)
-        if sku_index + 1 < len(lines):
-            sku = lines[sku_index + 1].replace(' ', '').strip()  # Remove any unwanted characters
-            sku = ''.join(c for c in sku if c.isalnum() or c in '_-')
+
+            if response.error.message:
+                print (f"Vision API error: {response.error.message}")
+                return None
             
-            print(f"Detected SKU: {sku} in file {os.path.basename(image_path)}")
-            confirm = input(f"Is this the correct SKU? (Detected: {sku}) [Press Enter to confirm or type the correct SKU]: ")
-            if confirm != "":
-                sku = confirm.strip().upper()
+            if response.text_annotations:
+                text = response.text_annotations[0].description.upper()
+                result = extract_sku_from_text(text, supplier)
+                if result:
+                    return result
+        
+        except Exception as e:
+            print (f"Google Vision attempt {attempt + 1} failed: {e}")
+            google_vision_failed = True
+            time.sleep(2)
             
-            return sku
+    if google_vision_failed == True:
+        print("Falling back to Tesseract OCR...")
+        try:
+            img = Image.open(image_path).convert('L')
+            text = pytesseract.image_to_string(img, config=r'--psm 6').upper()
+            return extract_sku_from_text(text, supplier)
+        except Exception as e:
+            print(f"Tesseract also failed: {e}")
+            return None
+        
+def extract_sku_from_text(text, supplier):
+    if supplier == "Arctic Cat":
+        match = re.search(r'\b[A-Z0-9]{4}-[A-Z0-9]{3}\b', text)
+        if match:
+            return match.group()
+            
+    else:
+        lines = text.splitlines()
+        lines = [line.strip() for line in lines if line.strip()]
+        if any('SKU' in line for line in lines):
+            sku_index = next(i for i, line in enumerate(lines) if 'SKU' in line)
+            if sku_index + 1 < len(lines):
+                sku = lines[sku_index + 1].replace(' ', '').strip()
+                sku = ''.join(c for c in sku if c.isalnum() or c in '-_')
+                return sku
+        return None
+
+def parse_sku(raw, supplier):
+    if supplier == "KAWASAKI":
+        raw = raw.replace('-','')
+        if len(raw) == 9:
+            return f"{raw[0:5]}-{raw[5:9]}"
+        elif len(raw) == 8:
+            return f"{raw[0:5]}-{raw[5:8]}"
+        elif len(raw) == 12:
+            return f"{raw[0:5]}-{raw[5:9]}-{raw[9:12]}"
+    
+    elif supplier == "YAMAHA":
+        raw =  raw.replace('-', '')
+        if len(raw) == 12:    
+            if raw.startswith('9'):
+                return f"{raw[0:5]}-{raw[5:10]}-{raw[10:12]}"
+            else:
+                return f"{raw[0:3]}-{raw[3:8]}-{raw[8:10]}-{raw[10:12]}"
+    elif supplier == "SUZUKI":
+        parts = raw.split('-')
+        if all(c == '0' for c in parts[-1]):
+            return '-'.join(parts[:-1])
+        return raw
+    
+    elif supplier == "CF MOTO":
+        if raw.endswith('*1') or raw.endswith('*2'):
+            return raw[:-2].strip('-')
+        return raw
+    
+    elif supplier == "BRP":
+        digits = raw[:9]
+        #BRP barcodes are 9 digits long, so if the raw text is 9 digits, we can return it as the SKU. Otherwise, we return None to indicate that it doesn't match the expected format.
+        if len(raw) == 9 and digits.isdigit():
+            return digits
+        return None # doesn't match BRP format, not a real barcode
+    
+    else:
+        return raw
+
+def is_divider(image_path, supplier):
+    sku = None
+
+    if supplier in BARCODE_SUPPLIERS:
+        raw = detect_barcode(image_path)
+        if raw:
+            sku = parse_sku(raw, supplier)
+        
+    elif supplier in TEXT_SUPPLIERS:
+        raw = detect_text(image_path, supplier)
+        if raw:
+            sku = raw
+    
+    elif supplier == "Other":
+        raw = detect_text(image_path, supplier)
+        print(f"Text detection result for {os.path.basename(image_path)}: {raw}")
+        if raw:
+            sku = raw
+
+    if sku: 
+        if supplier != "Other":
+            prefix = SUPPLIER_PREFIXES.get(supplier, "")
+            sku = prefix + sku
+        
+        print(f"Detected SKU: {sku} in {os.path.basename(image_path)}")
 
 
-def process_photos(photos):
+        return sku
+    
+    return None
+
+
+def process_photos(photos, supplier):
     current_sku= None
     groups = {}
+    failed = []
 
     for photo in photos: 
-        sku = is_divider(photo) 
+        sku = is_divider(photo, supplier) 
         if sku:
             current_sku = sku
             groups[sku] = []
+            print(f"New groups started: {sku}")
         elif current_sku:
             groups[current_sku].append(photo)
-    return groups
+        else: 
+            failed.append(os.path.basename(photo))
+
+    for sku, group_photos in groups.items():
+        if len(group_photos) > 6:
+            input(f"WARNING: {sku} located in file {os.path.basename(group_photos[0])} has {len(group_photos)} photos. It is possible that the program has missed a divider photo. Please check the photos in the input folder and press Enter to continue: ")
+
+    
+    
+    if failed:
+        print(f"\n {len(failed)} photos could not be grouped: ")
+        for f in failed:
+            print(f" - {f}")
+        print("Please manually assign these photos to the correct SKU folder.")
+
+    return groups, failed
 
 
 def export_folders(groups):
@@ -264,10 +425,63 @@ def update_excel_log(groups, imported=False):
     wb.save(EXCEL_PATH)
     print(f"Excel log updated at: {EXCEL_PATH}")
 
+def add_to_excel_log(sku, imported=False):
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(EXCEL_PATH)
+        ws = wb.active
+    except PermissionError:
+        print("Please close out of excel and restart the program. Once restarted, type 'update' when prompted to do so. :)")
+        return
+
+    # Check if SKU already exists in the log
+    for row in ws.iter_rows(min_row=2):
+        sku_cell = row[0]
+        if sku_cell.value == sku:
+            print(f"SKU {sku} already exists in the Excel log.")
+            return
+
+    # If SKU does not exist, add it to the next available row
+    last_row = 2
+    for row in ws.iter_rows(min_row = 1, max_col = 1):
+        if row[0].value:
+            last_row = row[0].row
+
+    next_row = last_row + 1
+        
+    ws.cell(row=next_row, column=1, value=sku)  # SKU
+    ws.cell(row=next_row, column=5, value="x")  # Photos Taken
+    ws.cell(row=next_row, column=2, value="")  # Inventory count (placeholder)
+    ws.cell(row=next_row, column=3, value="") # Bin Location (placeholder)
+    if imported:
+        ws.cell(row=next_row, column=6, value="x")  # Photos Imported
+
+    wb.save(EXCEL_PATH)
+    print(f"Added SKU {sku} to Excel log at row {next_row}.")
+
 #step 1: set up folders and check for Excel log file then start the process
 register_heif_opener()
 first_time_setup()
-start = input("Press Enter to start processing photos, or type 'update' to update the Excel log: ")
+
+# Step 2: Ask for supplier
+print("Suppliers: Kawasaki, Yamaha, Suzuki, Honda, Polaris, KTM, BRP, CF Moto, Arctic Cat, Other")
+supplier = input("Enter your supplier brand for this session: ").strip().upper()
+
+
+if supplier == "Other":
+    print("Note: 'Other' is intended for occasional use with mixed or unlisted brands.")
+    print("Please write the full SKU including supplier code on your divider card.")
+    print("This program will read it exactly as written.")
+
+else:
+    if supplier not in SUPPLIER_PREFIXES:
+        input("Supplier not recognized! Please choose from the list.")
+        raise SystemExit(0)
+    print(f"Processing {supplier} products - {SUPPLIER_PREFIXES[supplier]} prefix will be applied.")
+
+
+start = input("Press Enter to start processing photos, type 'update' to update the Excel Log")
 
 
 # Step 2 — Convert all photos to JPG
@@ -284,7 +498,7 @@ if start == "":
     print(f"Found {len(photos)} JPG images")
 
     # Step 4 — Process them
-    groups = process_photos(photos)
+    groups, failed = process_photos(photos, supplier)
     print(f"\nFound {len(groups)} SKUs")
     for sku, photos in groups.items():
         print(f"{sku}: {len(photos)} photos")
@@ -297,6 +511,8 @@ if start == "":
     
     
     # Step 7 - Update Excel log
+    for sku in groups.keys():
+        add_to_excel_log(sku, imported=upload_success)
     update_excel_log(groups, imported=upload_success)
     
     
@@ -312,5 +528,6 @@ elif start.lower() == "update":
               if os.path.isdir(os.path.join(OUTPUT_FOLDER, folder))}
     did_upload = input("Did you already upload the photos to the FTP server? If yes, type 'yes' and press Enter to update the Excel log with imported status. If not, just press Enter to update without imported status: ")
     update_excel_log(groups, imported = (did_upload.lower() == 'yes'))
+
 
 
