@@ -12,3 +12,7 @@ dist/
 *.desktop.ini
 *.exe
 BORG_Shared/
+build/
+dist/
+desktop.ini
+*.exe
