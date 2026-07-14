@@ -1,44 +1,74 @@
 # BORG — Bulk Organizer for Retail Galleries
-### Files made simple
+### Files Made Simple
 Built with Python | World of Powersports | Summer 2026
 
 ## Summary
 
-BORG was built for World of Powersports to automate the process of organizing and uploading product photos to ChannelAdvisory, reducing the manual processing time from hours to minutes.
-At its heart, this program is a product shoot organizer. It takes photos that you enter into a file that comes pre-installed with BORG. 
-These photos must be taken in this order: a piece of paper or a black screen with the word 'SKU' at the top and the SKU number below it.
-This process is repeated for each product, and as long as you take the photos in that order, Borg will do the rest. Borg will take your files and loop through them, checking for the word 'SKU'. 
-When it detects the word, it will immediately stop and ask if the text it found on the image is the SKU number.
-If the program did not read it correctly, then you have the opportunity to correct it, and the program will continue to add photos to a folder under the corrected SKU number.
-The program will then add these photos to groups, which will be turned into folders in the output folder that is also created with your first launch of the program.
-Along with this, it also uploads these files to an FTP server, where it then adds the pictures to the Channel Advisor, where they are distributed to product listings.
-An Excel sheet is also required, called Inventory_Images_Record, in order to track the products that have been captured and put on the listings.
+BORG was built for World of Powersports to automate the process of organizing and uploading product photos to ChannelAdvisor, reducing the manual processing time from hours to minutes.
+
+At its heart, this program is a product shoot organizer. It takes photos from the product_input folder and organizes them into SKU labeled folders automatically.
+
+For barcode suppliers (Kawasaki, Yamaha, Suzuki, Honda, Polaris, KTM, BRP, CF Moto), BORG uses the Cloudmersive Barcode API to automatically detect barcodes in photos and identify the product SKU — no divider card needed.
+
+For text-based suppliers (Arctic Cat), BORG uses the Google Cloud Vision API to read the SKU printed on the product packaging.
+
+For unlisted suppliers, BORG falls back to the original screenshot method — write the full SKU on a piece of paper or document, photograph it, and BORG reads it automatically using Google Cloud Vision with Tesseract OCR as a backup.
+
+This process is repeated for each product. BORG groups the following photos under that SKU, renames them, uploads them to ChannelAdvisor via SFTP, and marks them as complete in the Excel tracking sheet.
 
 ## System Requirements
 
+- Windows OS
 - Python 3.x
 - Tesseract OCR
-- Windows OS
+- Google Cloud Vision API key
+- Cloudmersive API key
 
 ## Setup
 
-1. Install Python from python.org
+1. Install Python from python.org (check "Add to PATH")
 2. Install Tesseract from github.com/UB-Mannheim/tesseract/wiki
 3. Run setup.bat
-4. Add the excel file inventory_images_record to a share folder called BORG_Shared
+4. Add inventory_images_record.xlsx to the BORG_Shared folder
 5. Run BORG.exe
+6. Enter FTP credentials when prompted
+7. Enter Google Vision API key when prompted
+8. Enter Cloudmersive API key when prompted
+
+## Supported Suppliers
+
+| Supplier | Method | Notes |
+|---|---|---|
+| Kawasaki | Barcode | Auto parsed |
+| Yamaha | Barcode | Auto parsed |
+| Suzuki | Barcode | Auto parsed |
+| Honda | Barcode | Exact match |
+| Polaris | Barcode | Exact match |
+| KTM | Barcode | Exact match |
+| BRP | Barcode | Auto parsed |
+| CF Moto | Barcode | Auto parsed |
+| Arctic Cat | Text OCR | Reads packaging text |
+| Other | Screenshot | Write SKU on paper/doc |
 
 ## How To Use
 
-- Press Enter to process photos
-- Type clear to clear the input folder
-- Type update to update the Excel log
+- Press Enter — process photos
+- Type 'update' — update Excel log without reprocessing
+
+## Notes
+
+- Only process ONE supplier brand per session
+- BORG will warn you if a SKU group has more than 6 photos (possible missed detection)
+- New SKUs not in the Excel sheet are added automatically
+- If Excel file is open, close it before running BORG
 
 ## Built With
 
-- Pillow: Image Processing
-- pytesseract: OCR
-- paramiko: SFTP
-- openpyxl: Excel automation
-- pywin32: Windows shortcuts
-- pillow-heif: HEIC support
+- Pillow — image processing and HEIC conversion
+- pytesseract — OCR fallback
+- Google Cloud Vision API — text detection
+- Cloudmersive Barcode API — barcode detection
+- paramiko — SFTP file uploads
+- openpyxl — Excel automation
+- pywin32 — Windows shortcut creation
+- pillow-heif — HEIC file support
