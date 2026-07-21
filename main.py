@@ -70,6 +70,7 @@ def create_shortcut():
     except Exception as e:
         print(f"Could not create shortcut: {e}")
 
+
 def setup_ftp_credentials():
         print("FTP credentials not found -- first time setup required.")
         print("Please ask your supervisor for the FTP credentials.")
@@ -87,6 +88,7 @@ def setup_ftp_credentials():
         print("FTP credentials saved! Please restart application for changes to take effect.")
         input("Press enter to exit...")
         raise SystemExit(0)
+
 
 def first_time_setup():
     os.makedirs(SOURCE_FOLDER, exist_ok=True)
@@ -124,8 +126,6 @@ def first_time_setup():
             input("Input folder cleared! Please add new photos and restart BORG.")
             raise SystemExit(0)
 
-            
-
 
 def get_jpgs(folder):
     valid_extentions = ['.jpg', '.jpeg']  # Add more valid extensions if needed
@@ -136,6 +136,7 @@ def get_jpgs(folder):
             jpgs.append(os.path.join(folder, file))
     jpgs.sort()
     return jpgs
+
 
 def get_all_images(folder):
     for file in os.listdir(folder):
@@ -178,7 +179,9 @@ def detect_barcode(image_path):
         return None
     except ApiException as e:
         return None
-
+    except Exception as e:
+        input(f"Connection timed out during barcode detection: {e}")
+        return None
 
 
 def detect_text(image_path, supplier, retries=2):
@@ -215,7 +218,8 @@ def detect_text(image_path, supplier, retries=2):
         except Exception as e:
             print(f"Tesseract also failed: {e}")
             return None
-        
+
+
 def extract_sku_from_text(text, supplier):
     if supplier == "Arctic Cat":
         match = re.search(r'\b[A-Z0-9]{4}-[A-Z0-9]{3}\b', text)
@@ -232,6 +236,7 @@ def extract_sku_from_text(text, supplier):
                 sku = ''.join(c for c in sku if c.isalnum() or c in '-_')
                 return sku
         return None
+
 
 def parse_sku(raw, supplier):
     if supplier == "KAWASAKI":
@@ -271,6 +276,7 @@ def parse_sku(raw, supplier):
     else:
         return raw
 
+
 def is_divider(image_path, supplier):
     sku = None
 
@@ -306,6 +312,7 @@ def is_divider(image_path, supplier):
 def process_photos(photos, supplier):
     current_sku= None
     groups = {}
+    flagged = {}
     failed = []
 
     for photo in photos: 
@@ -319,9 +326,10 @@ def process_photos(photos, supplier):
         else: 
             failed.append(os.path.basename(photo))
 
-    for sku, group_photos in groups.items():
-        if len(group_photos) > 6:
-            input(f"WARNING: {sku} located in file {os.path.basename(group_photos[0])} has {len(group_photos)} photos. It is possible that the program has missed a divider photo. Please check the photos in the input folder and press Enter to continue: ")
+    for sku in list(groups.keys()):
+        if len(groups[sku]) > 6:
+            flagged[sku] = groups.pop(sku)
+            print(f"Flagged {sku} pulled from upload - {len(flagged[sku])} photos. It is possible that a divider photo was missed. Needs manual review.")
 
     
     
@@ -331,7 +339,7 @@ def process_photos(photos, supplier):
             print(f" - {f}")
         print("Please manually assign these photos to the correct SKU folder.")
 
-    return groups, failed
+    return groups, flagged, failed
 
 
 def export_folders(groups):
@@ -425,6 +433,7 @@ def update_excel_log(groups, imported=False):
     wb.save(EXCEL_PATH)
     print(f"Excel log updated at: {EXCEL_PATH}")
 
+
 def add_to_excel_log(sku, imported=False):
     import openpyxl
 
@@ -498,7 +507,7 @@ if start == "":
     print(f"Found {len(photos)} JPG images")
 
     # Step 4 — Process them
-    groups, failed = process_photos(photos, supplier)
+    groups, flagged, failed = process_photos(photos, supplier)
     print(f"\nFound {len(groups)} SKUs")
     for sku, photos in groups.items():
         print(f"{sku}: {len(photos)} photos")
@@ -508,8 +517,26 @@ if start == "":
 
     # Step 6 - Upload to FTP
     upload_success = upload_to_ftp(groups)
-    
-    
+
+
+    # Step 7 - address flagged SKUs
+    if flagged:
+        for sku, photos_list in flagged.items():
+            print(f"SKU: {sku} has {len(photos_list)} photos. Please refer to the input folder and determine if a divider photo was missed.")
+            decision =input("Should this SKU group be uploaded as-is (yes/no)?")
+
+            if decision.lower().strip() == "yes":
+                groups[sku] = photos_list
+                export_folders({sku: photos_list})
+                upload_to_ftp({sku: photos_list})
+                add_to_excel_log(sku, imported=True)
+            else:
+                review_folder = os.path.join(OUTPUT_FOLDER, "NEEDS_REVIEW", sku)
+                os.makedirs(review_folder, exist_ok=True)
+                for i, photo in enumerate(photos_list, start=1):
+                    shutil.copy(photo, os.path.join(review_folder, f"{sku}__{i}.jpg"))
+
+
     # Step 7 - Update Excel log
     for sku in groups.keys():
         add_to_excel_log(sku, imported=upload_success)
@@ -522,12 +549,8 @@ if start == "":
         clear_input_folder()
 
 
-
 elif start.lower() == "update":
     groups = {folder: [] for folder in os.listdir(OUTPUT_FOLDER) 
               if os.path.isdir(os.path.join(OUTPUT_FOLDER, folder))}
     did_upload = input("Did you already upload the photos to the FTP server? If yes, type 'yes' and press Enter to update the Excel log with imported status. If not, just press Enter to update without imported status: ")
     update_excel_log(groups, imported = (did_upload.lower() == 'yes'))
-
-
-
