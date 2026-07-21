@@ -12,6 +12,7 @@ from win32com.client import Dispatch
 import sys
 from google.cloud import vision
 import re
+import textwrap
 
 
 
@@ -51,12 +52,15 @@ api_instance = cloudmersive_barcode_api_client.BarcodeScanApi(
     cloudmersive_barcode_api_client.ApiClient(configuration)
 )
 
+def print_wrapped(text, width=100):
+    print(textwrap.fill(text, width=width))
+
 
 def create_shortcut():
     try:
         desktop = os.path.join(os.environ['USERPROFILE'], 'OneDrive', 'Desktop')
         shortcut_path = os.path.join(desktop, 'BORG.lnk')
-        print("finding shortcut...")
+        print_wrapped("finding shortcut...")
 
         if not os.path.exists(shortcut_path):
             shell = Dispatch('WScript.Shell')
@@ -64,17 +68,17 @@ def create_shortcut():
             shortcut.Targetpath = BASE_DIR
             shortcut.IconLocation = os.path.join(BASE_DIR, 'borg_icon.ico')
             shortcut.save()
-            print("BORG shortcut created on Desktop! :)")
+            print_wrapped("BORG shortcut created on Desktop! :)")
         else:
-            print("BORG shortcut already exists on Desktop! :)")
+            print_wrapped("BORG shortcut already exists on Desktop! :)")
     except Exception as e:
-        print(f"Could not create shortcut: {e}")
+        print_wrapped(f"Could not create shortcut: {e}")
 
 
 def setup_ftp_credentials():
-        print("FTP credentials not found -- first time setup required.")
-        print("Please ask your supervisor for the FTP credentials.")
-        print("")
+        print_wrapped("FTP credentials not found -- first time setup required.")
+        print_wrapped("Please ask your supervisor for the FTP credentials.")
+        print_wrapped("")
         host = input("Enter FTP host: ").strip()
         user = input("Enter your FTP username: ").strip()
         password = input("Enter your FTP password: ")
@@ -85,7 +89,7 @@ def setup_ftp_credentials():
         os.system(f'setx FTP_PASSWORD "{password}"')
         os.system(f'setx FTP_PATH "{path}"')
 
-        print("FTP credentials saved! Please restart application for changes to take effect.")
+        print_wrapped("FTP credentials saved! Please restart application for changes to take effect.")
         input("Press enter to exit...")
         raise SystemExit(0)
 
@@ -96,7 +100,7 @@ def first_time_setup():
     create_shortcut()
 
     if not os.path.exists(EXCEL_PATH):
-        print("ERROR: the file 'inventory_images_record.xlsx' does not exist in the BORG folder." \
+        print_wrapped("ERROR: the file 'inventory_images_record.xlsx' does not exist in the BORG folder." \
         "You are not allowed to run this tool until you add this file.")
         input("Please seek assistance from your supervisor to obtain the 'inventory_images_record.xlsx' file and place it in the BORG folder, or await further instructions." \
 
@@ -178,10 +182,31 @@ def detect_barcode(image_path):
             return response.raw_text
         return None
     except ApiException as e:
+        print_wrapped(f"Cloudmersive API error during barcode detection: {e}")
         return None
     except Exception as e:
-        input(f"Connection timed out during barcode detection: {e}")
+        print_wrapped(f"Error during barcode detection: {e}")
         return None
+    
+
+def detect_and_verify_sku(image_path, supplier):
+    barcode_raw = detect_barcode(image_path)
+    barcode_sku = parse_sku(barcode_raw, supplier) if barcode_raw else None
+
+    text_raw = detect_text(image_path, supplier)
+
+    if barcode_sku and text_raw:
+        if barcode_sku.replace('-', '') == text_raw.replace('-', '').replace(' ', ''):
+            return barcode_sku
+        
+    elif barcode_sku:
+        return barcode_sku
+    
+    elif text_raw:
+        print(f"Barcode unreadable - recovered from label text: {text_raw}")
+        return text_raw
+    
+    return None  # Neither barcode nor text could be detected
 
 
 def detect_text(image_path, supplier, retries=2):
@@ -195,7 +220,7 @@ def detect_text(image_path, supplier, retries=2):
 
 
             if response.error.message:
-                print (f"Vision API error: {response.error.message}")
+                print_wrapped(f"Vision API error: {response.error.message}")
                 return None
             
             if response.text_annotations:
@@ -205,19 +230,21 @@ def detect_text(image_path, supplier, retries=2):
                     return result
         
         except Exception as e:
-            print (f"Google Vision attempt {attempt + 1} failed: {e}")
+            print_wrapped(f"Google Vision attempt {attempt + 1} failed: {e}")
             google_vision_failed = True
             time.sleep(2)
             
     if google_vision_failed == True:
-        print("Falling back to Tesseract OCR...")
+        print_wrapped("Falling back to Tesseract OCR...")
         try:
             img = Image.open(image_path).convert('L')
             text = pytesseract.image_to_string(img, config=r'--psm 6').upper()
             return extract_sku_from_text(text, supplier)
         except Exception as e:
-            print(f"Tesseract also failed: {e}")
+            print_wrapped(f"Tesseract also failed: {e}")
             return None
+
+    barcode_raw = detect_barcode(image)
 
 
 def extract_sku_from_text(text, supplier):
@@ -225,6 +252,17 @@ def extract_sku_from_text(text, supplier):
         match = re.search(r'\b[A-Z0-9]{4}-[A-Z0-9]{3}\b', text)
         if match:
             return match.group()
+    
+    if supplier == "YAMAHA":
+        # mathes XXX-XXXXX-XX-XX or XXXXX-XXXXX-XX
+        match = re.search(r'\b[A-Z0-9]{3}-[A-Z0-9]{5}-[A-Z0-9]{2}-[A-Z0-9]{2}\b|\b[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{2}\b', text)
+        if match:
+            return match.group()
+        
+        # falls back to formats missing the additional '-00' in the product number, which is common on some Yamaha parts
+        match = re.search(r'\b[A-Z0-9]{3}-[A-Z0-9]{5}-[A-Z0-9]{2}\b|\b[A-Z0-9]{5}-[A-Z0-9]{5}\b', text)
+        if match:
+            return match.group() + '-00'
             
     else:
         lines = text.splitlines()
@@ -312,6 +350,7 @@ def is_divider(image_path, supplier):
 def process_photos(photos, supplier):
     current_sku= None
     groups = {}
+    divider_files = {}
     flagged = {}
     failed = []
 
@@ -320,6 +359,7 @@ def process_photos(photos, supplier):
         if sku:
             current_sku = sku
             groups[sku] = []
+            divider_files[sku] = os.path.basename(photo)
             print(f"New groups started: {sku}")
         elif current_sku:
             groups[current_sku].append(photo)
@@ -327,17 +367,19 @@ def process_photos(photos, supplier):
             failed.append(os.path.basename(photo))
 
     for sku in list(groups.keys()):
-        if len(groups[sku]) > 6:
+        if len(groups[sku]) > 5:
             flagged[sku] = groups.pop(sku)
-            print(f"Flagged {sku} pulled from upload - {len(flagged[sku])} photos. It is possible that a divider photo was missed. Needs manual review.")
+            print_wrapped(f"Flagged {sku} pulled from upload - {len(flagged[sku])} photos."
+                  f"Sku group begins at {divider_files[sku]}." 
+                  "It is possible that a divider photo was missed. Needs manual review.")
 
     
     
     if failed:
-        print(f"\n {len(failed)} photos could not be grouped: ")
+        print_wrapped(f"\n {len(failed)} photos could not be grouped: ")
         for f in failed:
-            print(f" - {f}")
-        print("Please manually assign these photos to the correct SKU folder.")
+            print_wrapped(f" - {f}")
+        print_wrapped("Please manually assign these photos to the correct SKU folder.")
 
     return groups, flagged, failed
 
@@ -360,7 +402,7 @@ def export_folders(groups):
             logo_destination = os.path.join(sku_folder, new_filename)
             shutil.copy(LOGO_PATH, logo_destination)
 
-    print(f"\nDONE! {len(groups)} SKU folders created in {OUTPUT_FOLDER}")
+    print_wrapped(f"\nDONE! {len(groups)} SKU folders created in {OUTPUT_FOLDER}")
 
 
 def clear_input_folder():
@@ -368,7 +410,7 @@ def clear_input_folder():
         file_path = os.path.join(SOURCE_FOLDER, file)
         if os.path.isfile(file_path):
             os.remove(file_path)
-    print(f"Cleared all files in {SOURCE_FOLDER}")
+    print_wrapped(f"Cleared all files in {SOURCE_FOLDER}")
 
 
 def upload_to_ftp(groups):
@@ -377,16 +419,16 @@ def upload_to_ftp(groups):
     FTP_PASS = os.getenv("FTP_PASSWORD")
     FTP_PATH = os.getenv("FTP_PATH")
 
-    print(f"Uploading to FTP server: {FTP_HOST}")
+    print_wrapped(f"Uploading to FTP server: {FTP_HOST}")
 
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(hostname=FTP_HOST, port=22, username=FTP_USER, password=FTP_PASS)
-        print(f"Connected to SSH server: {FTP_HOST}")
+        print_wrapped(f"Connected to SSH server: {FTP_HOST}")
         sftp = client.open_sftp()
         sftp.chdir(FTP_PATH)
-        print(f"Changed directory to: {FTP_PATH}")
+        print_wrapped(f"Changed directory to: {FTP_PATH}")
 
         for sku in groups.keys():
             local_folder = os.path.join(OUTPUT_FOLDER, sku)
@@ -396,13 +438,13 @@ def upload_to_ftp(groups):
                         local_path = os.path.join(local_folder, file)
                         remote_path = f"{FTP_PATH}/{file}"
                         sftp.put(local_path, remote_path)
-                        print(f"Uploaded: {file}")
+                        print_wrapped(f"Uploaded: {file}")
         sftp.close()
         client.close()
         print("All files uploaded successfully!")
         return True
     except Exception as e:
-        print(f"Failed to upload to FTP server: {e}")
+        print_wrapped(f"Failed to upload to FTP server: {e}")
         return False
 
 
@@ -413,7 +455,7 @@ def update_excel_log(groups, imported=False):
         wb = openpyxl.load_workbook(EXCEL_PATH)
         ws = wb.active
     except PermissionError:
-        print("Please close out of excel and restart the program. Once restarted, type 'update' when prompted to do so. :)")
+        print_wrapped("Please close out of excel and restart the program. Once restarted, type 'update' when prompted to do so. :)")
         return
     
     for row in ws.iter_rows(min_row=2):
@@ -425,13 +467,13 @@ def update_excel_log(groups, imported=False):
             photos_taken_cell.value = "x"
             if imported == True:
                 photos_imported_cell.value = "x"
-                print(f"Marked SKU {sku_cell.value} as photographed and imported")
+                print_wrapped(f"Marked SKU {sku_cell.value} as photographed and imported")
             else:
-                print(f"Marked SKU {sku_cell.value} as photographed but not imported")
+                print_wrapped(f"Marked SKU {sku_cell.value} as photographed but not imported")
 
 
     wb.save(EXCEL_PATH)
-    print(f"Excel log updated at: {EXCEL_PATH}")
+    print_wrapped(f"Excel log updated at: {EXCEL_PATH}")
 
 
 def add_to_excel_log(sku, imported=False):
@@ -441,14 +483,14 @@ def add_to_excel_log(sku, imported=False):
         wb = openpyxl.load_workbook(EXCEL_PATH)
         ws = wb.active
     except PermissionError:
-        print("Please close out of excel and restart the program. Once restarted, type 'update' when prompted to do so. :)")
+        print_wrapped("Please close out of excel and restart the program. Once restarted, type 'update' when prompted to do so. :)")
         return
 
     # Check if SKU already exists in the log
     for row in ws.iter_rows(min_row=2):
         sku_cell = row[0]
         if sku_cell.value == sku:
-            print(f"SKU {sku} already exists in the Excel log.")
+            print_wrapped(f"SKU {sku} already exists in the Excel log.")
             return
 
     # If SKU does not exist, add it to the next available row
@@ -467,50 +509,48 @@ def add_to_excel_log(sku, imported=False):
         ws.cell(row=next_row, column=6, value="x")  # Photos Imported
 
     wb.save(EXCEL_PATH)
-    print(f"Added SKU {sku} to Excel log at row {next_row}.")
+    print_wrapped(f"Added SKU {sku} to Excel log at row {next_row}.")
+
 
 #step 1: set up folders and check for Excel log file then start the process
 register_heif_opener()
 first_time_setup()
 
 # Step 2: Ask for supplier
-print("Suppliers: Kawasaki, Yamaha, Suzuki, Honda, Polaris, KTM, BRP, CF Moto, Arctic Cat, Other")
+print_wrapped("Suppliers: Kawasaki, Yamaha, Suzuki, Honda, Polaris, KTM, BRP, CF Moto, Arctic Cat, Other")
 supplier = input("Enter your supplier brand for this session: ").strip().upper()
 
-
 if supplier == "Other":
-    print("Note: 'Other' is intended for occasional use with mixed or unlisted brands.")
-    print("Please write the full SKU including supplier code on your divider card.")
-    print("This program will read it exactly as written.")
+    print_wrapped("Note: 'Other' is intended for occasional use with mixed or unlisted brands.")
+    print_wrapped("Please write the full SKU including supplier code on your divider card.")
+    print_wrapped("This program will read it exactly as written.")
 
 else:
     if supplier not in SUPPLIER_PREFIXES:
         input("Supplier not recognized! Please choose from the list.")
         raise SystemExit(0)
-    print(f"Processing {supplier} products - {SUPPLIER_PREFIXES[supplier]} prefix will be applied.")
-
+    print_wrapped(f"Processing {supplier} products - {SUPPLIER_PREFIXES[supplier]} prefix will be applied.")
 
 start = input("Press Enter to start processing photos, type 'update' to update the Excel Log")
 
-
 # Step 2 — Convert all photos to JPG
 if start == "":
-    print("BORG is running!!!")
-    print(f"Looking for photos in: {SOURCE_FOLDER}")
+    print_wrapped("BORG is running!!!")
+    print_wrapped(f"Looking for photos in: {SOURCE_FOLDER}")
     
-    print("Converting all photos to JPG...")
+    print_wrapped("Converting all photos to JPG...")
     for photo in get_all_images(SOURCE_FOLDER):
         convert_to_jpg(photo)
 
     # Step 3 — Get only JPGs
     photos = get_jpgs(SOURCE_FOLDER)
-    print(f"Found {len(photos)} JPG images")
+    print_wrapped(f"Found {len(photos)} JPG images")
 
     # Step 4 — Process them
     groups, flagged, failed = process_photos(photos, supplier)
-    print(f"\nFound {len(groups)} SKUs")
+    print_wrapped(f"\nFound {len(groups)} SKUs")
     for sku, photos in groups.items():
-        print(f"{sku}: {len(photos)} photos")
+        print_wrapped(f"{sku}: {len(photos)} photos")
 
     # Step 5 — create the folders with the images in the output folder
     export_folders(groups)
@@ -518,11 +558,10 @@ if start == "":
     # Step 6 - Upload to FTP
     upload_success = upload_to_ftp(groups)
 
-
     # Step 7 - address flagged SKUs
     if flagged:
         for sku, photos_list in flagged.items():
-            print(f"SKU: {sku} has {len(photos_list)} photos. Please refer to the input folder and determine if a divider photo was missed.")
+            print_wrapped(f"SKU: {sku} has {len(photos_list)} photos. Please refer to the input folder and determine if a divider photo was missed.")
             decision =input("Should this SKU group be uploaded as-is (yes/no)?")
 
             if decision.lower().strip() == "yes":
@@ -536,21 +575,21 @@ if start == "":
                 for i, photo in enumerate(photos_list, start=1):
                     shutil.copy(photo, os.path.join(review_folder, f"{sku}__{i}.jpg"))
 
-
     # Step 7 - Update Excel log
     for sku in groups.keys():
         add_to_excel_log(sku, imported=upload_success)
     update_excel_log(groups, imported=upload_success)
-    
     
     # Step 8 — Clear source folder
     confirm_clear = input(f"Do you want to clear the source folder ({SOURCE_FOLDER})? This will delete all original photos. Type 'yes' to confirm: ")
     if confirm_clear.lower() == 'yes':
         clear_input_folder()
 
-
 elif start.lower() == "update":
     groups = {folder: [] for folder in os.listdir(OUTPUT_FOLDER) 
               if os.path.isdir(os.path.join(OUTPUT_FOLDER, folder))}
     did_upload = input("Did you already upload the photos to the FTP server? If yes, type 'yes' and press Enter to update the Excel log with imported status. If not, just press Enter to update without imported status: ")
     update_excel_log(groups, imported = (did_upload.lower() == 'yes'))
+
+
+
