@@ -34,7 +34,7 @@ SUPPLIER_PREFIXES = {"KAWASAKI": "KA",
                      "CF MOTO": "CF",
                      "ARCTIC CAT": "AC",
                      "HONDA": "HO"}
-BARCODE_SUPPLIERS = ["KAWASAKI", "YAMAHA", "SUZUZI", "HONDA", "POLARIS", "KTM", "BRP", "CF MOTO"]
+BARCODE_SUPPLIERS = ["KAWASAKI", "YAMAHA", "SUZUKI", "HONDA", "POLARIS", "KTM", "BRP", "CF MOTO"]
 TEXT_SUPPLIERS = ["ARCTIC CAT"]
 
 
@@ -182,7 +182,6 @@ def detect_barcode(image_path):
             return response.raw_text
         return None
     except ApiException as e:
-        print_wrapped(f"Cloudmersive API error during barcode detection: {e}")
         return None
     except Exception as e:
         print_wrapped(f"Error during barcode detection: {e}")
@@ -198,7 +197,10 @@ def detect_and_verify_sku(image_path, supplier):
     if barcode_sku and text_raw:
         if barcode_sku.replace('-', '') == text_raw.replace('-', '').replace(' ', ''):
             return barcode_sku
-        
+        else:
+            print_wrapped(f"Mismatch - barcode: {barcode_sku}, label text: {text_raw}. Using barcode as SKU.")
+            return barcode_sku
+
     elif barcode_sku:
         return barcode_sku
     
@@ -244,11 +246,9 @@ def detect_text(image_path, supplier, retries=2):
             print_wrapped(f"Tesseract also failed: {e}")
             return None
 
-    barcode_raw = detect_barcode(image)
-
 
 def extract_sku_from_text(text, supplier):
-    if supplier == "Arctic Cat":
+    if supplier == "ARCTIC CAT":
         match = re.search(r'\b[A-Z0-9]{4}-[A-Z0-9]{3}\b', text)
         if match:
             return match.group()
@@ -259,7 +259,7 @@ def extract_sku_from_text(text, supplier):
         if match:
             return match.group()
         
-        # falls back to formats missing the additional '-00' in the product number, which is common on some Yamaha parts
+        # falls back to formats missing the additional '-00' in the product number, which is common on a lot of Yamaha parts
         match = re.search(r'\b[A-Z0-9]{3}-[A-Z0-9]{5}-[A-Z0-9]{2}\b|\b[A-Z0-9]{5}-[A-Z0-9]{5}\b', text)
         if match:
             return match.group() + '-00'
@@ -319,10 +319,9 @@ def is_divider(image_path, supplier):
     sku = None
 
     if supplier in BARCODE_SUPPLIERS:
-        raw = detect_barcode(image_path)
-        if raw:
-            sku = parse_sku(raw, supplier)
-        
+        if supplier in BARCODE_SUPPLIERS:
+            sku = detect_and_verify_sku(image_path, supplier)
+            
     elif supplier in TEXT_SUPPLIERS:
         raw = detect_text(image_path, supplier)
         if raw:
@@ -567,8 +566,8 @@ if start == "":
             if decision.lower().strip() == "yes":
                 groups[sku] = photos_list
                 export_folders({sku: photos_list})
-                upload_to_ftp({sku: photos_list})
-                add_to_excel_log(sku, imported=True)
+                flagged_upload_success = upload_to_ftp({sku: photos_list})
+                add_to_excel_log(sku, imported=flagged_upload_success)
             else:
                 review_folder = os.path.join(OUTPUT_FOLDER, "NEEDS_REVIEW", sku)
                 os.makedirs(review_folder, exist_ok=True)
